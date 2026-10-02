@@ -1283,3 +1283,64 @@ func TestMaxDepth(t *testing.T) {
 		})
 	}
 }
+
+func TestIssue470(t *testing.T) {
+	tests := []struct {
+		input   string
+		wantErr string
+	}{
+		{
+			"a = []\na.b = ''",
+			"Key 'a' has already been defined",
+		},
+		{
+			"a = {}\na.b = ''",
+			"Key 'a' has already been defined",
+		},
+		{
+			"a = { b = 1 }\na.c = 2",
+			"Key 'a' has already been defined",
+		},
+		{
+			"a = [1, 2]\na.b = ''",
+			"Key 'a' has already been defined",
+		},
+		{
+			"a = {}\n[a.b]",
+			"Key 'a' has already been defined",
+		},
+		{
+			"a = []\n[a.b]",
+			"Key 'a' has already been defined",
+		},
+		{
+			"a = {}\n[[a.b]]",
+			"Key 'a' has already been defined",
+		},
+		{
+			"a = []\n[[a.b]]",
+			"Key 'a' has already been defined",
+		},
+		{
+			"[tbl]\na = []\na.b = ''",
+			"Key 'tbl.a' has already been defined",
+		},
+		{
+			"[tbl]\na = {}\na.b = ''",
+			"Key 'tbl.a' has already been defined",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run("", func(t *testing.T) {
+			var m map[string]any
+			_, err := Decode(tt.input, &m)
+			if err == nil {
+				t.Fatalf("expected error for input %q, got nil", tt.input)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("unexpected error for input %q:\nhave: %v\nwant substring: %v", tt.input, err, tt.wantErr)
+			}
+		})
+	}
+}

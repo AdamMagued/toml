@@ -23,6 +23,7 @@ type parser struct {
 	keyInfo   map[string]keyInfo  // Map keyname → info about the TOML key.
 	mapping   map[string]any      // Map keyname → key value.
 	implicits map[string]struct{} // Record implicit keys (e.g. "key.group.names").
+	inlines   map[string]struct{} // Record keys defined as inline tables or arrays.
 }
 
 type keyInfo struct {
@@ -70,6 +71,7 @@ func parse(data string, maxDepth int) (p *parser, err error) {
 		mapping:   make(map[string]any),
 		ordered:   make([]Key, 0),
 		implicits: make(map[string]struct{}),
+		inlines:   make(map[string]struct{}),
 	}
 	for {
 		item := p.next()
@@ -179,6 +181,7 @@ func (p *parser) topLevel(item item) {
 		p.addContext(key, true)
 		p.setType("", tomlArrayHash, item.pos)
 		p.ordered = append(p.ordered, key)
+		p.removeInlinesPrefix(key)
 	case itemKeyStart: // key = ..
 		outerContext := p.context
 		/// Read all the key parts (e.g. 'a' and 'b' in 'a.b')
@@ -205,6 +208,9 @@ func (p *parser) topLevel(item item) {
 		val, typ := p.value(vItem, false)
 		p.setValue(p.currentKey, val)
 		p.setType(p.currentKey, typ, vItem.pos)
+		if vItem.typ == itemInlineTableStart || typ == tomlArray {
+			p.addInline(p.context.add(p.currentKey))
+		}
 
 		/// Remove the context we added (preserving any context from [tbl] lines).
 		p.context = outerContext
@@ -468,9 +474,13 @@ func (p *parser) valueInlineTable(it item, parentIsArray bool) (any, tomlType) {
 		p.ordered = append(p.ordered, p.context.add(p.currentKey))
 
 		/// Set the value.
-		val, typ := p.value(p.next(), false)
+		vItem := p.next()
+		val, typ := p.value(vItem, false)
 		p.setValue(p.currentKey, val)
 		p.setType(p.currentKey, typ, it.pos)
+		if vItem.typ == itemInlineTableStart || typ == tomlArray {
+			p.addInline(p.context.add(p.currentKey))
+		}
 
 		hash := topHash
 		for _, c := range context {
@@ -491,6 +501,9 @@ func (p *parser) valueInlineTable(it item, parentIsArray bool) (any, tomlType) {
 	}
 	p.context = outerContext
 	p.currentKey = outerKey
+	if parentIsArray {
+		p.removeInlinesPrefix(append(outerContext, outerKey))
+	}
 	return topHash, tomlHash
 }
 
@@ -564,6 +577,9 @@ func (p *parser) addContext(key Key, array bool) {
 	for _, k := range key.parent() {
 		_, ok := hashContext[k]
 		keyContext = append(keyContext, k)
+		if p.isInline(keyContext) {
+			p.panicf("Key '%s' has already been defined.", keyContext)
+		}
 
 		// No key? Make an implicit hash and move on.
 		if !ok {
@@ -591,6 +607,10 @@ func (p *parser) addContext(key Key, array bool) {
 		// If this is the first element for this array, then allocate a new
 		// list of tables for it.
 		k := key.last()
+		fullKey := append(keyContext, k)
+		if p.isInline(fullKey) {
+			p.panicf("Key '%s' has already been defined.", fullKey)
+		}
 		if _, ok := hashContext[k]; !ok {
 			hashContext[k] = make([]map[string]any, 0, 4)
 		}
@@ -603,6 +623,10 @@ func (p *parser) addContext(key Key, array bool) {
 			p.panicf("Key '%s' was already created and cannot be used as an array.", key)
 		}
 	} else {
+		fullKey := append(keyContext, key.last())
+		if p.isInline(fullKey) {
+			p.panicf("Key '%s' has already been defined.", fullKey)
+		}
 		p.setValue(key.last(), make(map[string]any))
 	}
 	p.context = append(p.context, key.last())
@@ -620,6 +644,9 @@ func (p *parser) setValue(key string, value any) {
 	)
 	for _, k := range p.context {
 		keyContext = append(keyContext, k)
+		if p.isInline(keyContext) {
+			p.panicf("Key '%s' has already been defined.", keyContext)
+		}
 		if tmpHash, ok = hash[k]; !ok {
 			p.bug("Context for key '%s' has not been established.", keyContext)
 		}
@@ -637,6 +664,9 @@ func (p *parser) setValue(key string, value any) {
 	keyContext = append(keyContext, key)
 
 	if _, ok := hash[key]; ok {
+		if p.isInline(keyContext) {
+			p.panicf("Key '%s' has already been defined.", keyContext)
+		}
 		// Normally redefining keys isn't allowed, but the key could have been
 		// defined implicitly and it's allowed to be redefined concretely. (See
 		// the `valid/implicit-and-explicit-after.toml` in toml-test)
@@ -690,11 +720,30 @@ func (p *parser) setType(key string, typ tomlType, pos Position) {
 
 // Implicit keys need to be created when tables are implied in "a.b.c.d = 1" and
 // "[a.b.c]" (the "a", "b", and "c" hashes are never created explicitly).
-func (p *parser) addImplicit(key Key)        { p.implicits[key.String()] = struct{}{} }
-func (p *parser) removeImplicit(key Key)     { delete(p.implicits, key.String()) }
-func (p *parser) isImplicit(key Key) bool    { _, ok := p.implicits[key.String()]; return ok }
-func (p *parser) isArray(key Key) bool       { return p.keyInfo[key.String()].tomlType == tomlArray }
-func (p *parser) addImplicitContext(key Key) { p.addImplicit(key); p.addContext(key, false) }
+func (p *parser) addImplicit(key Key)    { p.implicits[key.String()] = struct{}{} }
+func (p *parser) removeImplicit(key Key) { delete(p.implicits, key.String()) }
+func (p *parser) isImplicit(key Key) bool {
+	_, ok := p.implicits[key.String()]
+	return ok
+}
+func (p *parser) isArray(key Key) bool  { return p.keyInfo[key.String()].tomlType == tomlArray }
+func (p *parser) addInline(key Key)     { p.inlines[key.String()] = struct{}{} }
+func (p *parser) isInline(key Key) bool { _, ok := p.inlines[key.String()]; return ok }
+func (p *parser) removeInlinesPrefix(key Key) {
+	prefix := key.String() + "."
+	for k := range p.inlines {
+		if strings.HasPrefix(k, prefix) {
+			delete(p.inlines, k)
+		}
+	}
+}
+func (p *parser) addImplicitContext(key Key) {
+	if p.isInline(key) {
+		p.panicf("Key '%s' has already been defined.", key)
+	}
+	p.addImplicit(key)
+	p.addContext(key, false)
+}
 
 // current returns the full key name of the current context.
 func (p *parser) current() string {
