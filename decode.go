@@ -348,10 +348,11 @@ func (md *MetaData) unifyStruct(mapping any, rv reflect.Value) error {
 }
 
 func (md *MetaData) unifyMap(mapping any, rv reflect.Value) error {
-	keyType := rv.Type().Key().Kind()
-	if keyType != reflect.String && keyType != reflect.Interface {
+	keyType := rv.Type().Key()
+	isTextUnmarshaler := keyType.Implements(unmarshalText) || reflect.PtrTo(keyType).Implements(unmarshalText)
+	if !isTextUnmarshaler && keyType.Kind() != reflect.String && keyType.Kind() != reflect.Interface {
 		return fmt.Errorf("toml: cannot decode to a map with non-string key type (%s in %q)",
-			keyType, rv.Type())
+			keyType.Kind(), rv.Type())
 	}
 
 	tmap, ok := mapping.(map[string]any)
@@ -368,6 +369,31 @@ func (md *MetaData) unifyMap(mapping any, rv reflect.Value) error {
 		md.decoded[md.context.add(k).String()] = struct{}{}
 		md.context = append(md.context, k)
 
+		var rvkey reflect.Value
+		if isTextUnmarshaler {
+			if keyType.Kind() == reflect.Pointer {
+				keyVal := reflect.New(keyType.Elem())
+				if err := keyVal.Interface().(encoding.TextUnmarshaler).UnmarshalText([]byte(k)); err != nil {
+					return md.parseErr(err)
+				}
+				rvkey = keyVal
+			} else {
+				keyVal := reflect.New(keyType)
+				if err := keyVal.Interface().(encoding.TextUnmarshaler).UnmarshalText([]byte(k)); err != nil {
+					return md.parseErr(err)
+				}
+				rvkey = keyVal.Elem()
+			}
+		} else {
+			rvkey = indirect(reflect.New(keyType))
+			switch keyType.Kind() {
+			case reflect.Interface:
+				rvkey.Set(reflect.ValueOf(k))
+			case reflect.String:
+				rvkey.SetString(k)
+			}
+		}
+
 		rvval := reflect.Indirect(reflect.New(rv.Type().Elem()))
 
 		err := md.unify(v, indirect(rvval))
@@ -375,15 +401,6 @@ func (md *MetaData) unifyMap(mapping any, rv reflect.Value) error {
 			return err
 		}
 		md.context = md.context[0 : len(md.context)-1]
-
-		rvkey := indirect(reflect.New(rv.Type().Key()))
-
-		switch keyType {
-		case reflect.Interface:
-			rvkey.Set(reflect.ValueOf(k))
-		case reflect.String:
-			rvkey.SetString(k)
-		}
 
 		rv.SetMapIndex(rvkey, rvval)
 	}

@@ -1283,3 +1283,134 @@ func TestMaxDepth(t *testing.T) {
 		})
 	}
 }
+
+type decodeMapKeyID string
+
+func (id *decodeMapKeyID) UnmarshalText(b []byte) error {
+	*id = decodeMapKeyID("unmarshaled:" + string(b))
+	return nil
+}
+
+type decodeMapKeyStruct struct {
+	Val string
+}
+
+func (s *decodeMapKeyStruct) UnmarshalText(b []byte) error {
+	s.Val = "struct:" + string(b)
+	return nil
+}
+
+type decodeMapKeyErr string
+
+func (e *decodeMapKeyErr) UnmarshalText(b []byte) error {
+	if string(b) == "bad" {
+		return errors.New("bad key error")
+	}
+	*e = decodeMapKeyErr(b)
+	return nil
+}
+
+func TestDecodeMapKeyTextUnmarshaler(t *testing.T) {
+	t.Run("struct with map", func(t *testing.T) {
+		var s struct {
+			Attr map[decodeMapKeyID]string `toml:"attr"`
+		}
+		_, err := Decode(`
+[attr]
+a = "valA"
+b = "valB"
+`, &s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(s.Attr) != 2 {
+			t.Fatalf("expected 2 elements, got %d", len(s.Attr))
+		}
+		if s.Attr[decodeMapKeyID("unmarshaled:a")] != "valA" {
+			t.Errorf("expected valA, got %q", s.Attr[decodeMapKeyID("unmarshaled:a")])
+		}
+		if s.Attr[decodeMapKeyID("unmarshaled:b")] != "valB" {
+			t.Errorf("expected valB, got %q", s.Attr[decodeMapKeyID("unmarshaled:b")])
+		}
+	})
+
+	t.Run("struct with inline map", func(t *testing.T) {
+		var s struct {
+			Attr map[decodeMapKeyID]int `toml:"attr"`
+		}
+		_, err := Decode(`attr = { foo = 1, bar = 2 }`, &s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(s.Attr) != 2 {
+			t.Fatalf("expected 2 elements, got %d", len(s.Attr))
+		}
+		if s.Attr[decodeMapKeyID("unmarshaled:foo")] != 1 {
+			t.Errorf("expected 1, got %d", s.Attr[decodeMapKeyID("unmarshaled:foo")])
+		}
+		if s.Attr[decodeMapKeyID("unmarshaled:bar")] != 2 {
+			t.Errorf("expected 2, got %d", s.Attr[decodeMapKeyID("unmarshaled:bar")])
+		}
+	})
+
+	t.Run("direct map", func(t *testing.T) {
+		var m map[decodeMapKeyID]string
+		_, err := Decode(`foo = "bar"`, &m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m[decodeMapKeyID("unmarshaled:foo")] != "bar" {
+			t.Fatalf("got %#v", m)
+		}
+	})
+
+	t.Run("custom struct key", func(t *testing.T) {
+		var s struct {
+			Attr map[decodeMapKeyStruct]string `toml:"attr"`
+		}
+		_, err := Decode(`
+[attr]
+hello = "world"
+`, &s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		expectedKey := decodeMapKeyStruct{Val: "struct:hello"}
+		if s.Attr[expectedKey] != "world" {
+			t.Fatalf("got %#v", s.Attr)
+		}
+	})
+
+	t.Run("pointer key", func(t *testing.T) {
+		var m map[*decodeMapKeyID]string
+		_, err := Decode(`key = "value"`, &m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(m) != 1 {
+			t.Fatalf("expected 1 element, got %d", len(m))
+		}
+		for k, v := range m {
+			if *k != decodeMapKeyID("unmarshaled:key") || v != "value" {
+				t.Fatalf("got k=%v v=%v", *k, v)
+			}
+		}
+	})
+
+	t.Run("unmarshal error", func(t *testing.T) {
+		var s struct {
+			Attr map[decodeMapKeyErr]string `toml:"attr"`
+		}
+		_, err := Decode(`
+[attr]
+bad = "val"
+`, &s)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "bad key error") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
