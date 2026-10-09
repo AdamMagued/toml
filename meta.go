@@ -8,7 +8,7 @@ import (
 // accessible otherwise.
 //
 // It allows checking if a key is defined in the TOML data, whether any keys
-// were undecoded, and the TOML type of a key.
+// were undecoded, the position of a key, and the TOML type of a key.
 type MetaData struct {
 	context Key // Used only during decoding.
 
@@ -46,13 +46,85 @@ func (md *MetaData) IsDefined(key ...string) bool {
 	return true
 }
 
+// KeyInfo contains meta information about a key in the TOML data.
+type KeyInfo struct {
+	Position Position
+	Type     string
+}
+
+// KeyInfo returns meta information about the key specified.
+//
+// The key should be specified hierarchically, for example to access the TOML
+// key "a.b.c" you would use KeyInfo("a", "b", "c"). Keys are case sensitive.
+//
+// KeyInfo will return a zero [KeyInfo] if given an empty key or a key that does
+// not exist.
+func (md *MetaData) KeyInfo(key ...string) KeyInfo {
+	if len(key) == 0 {
+		return KeyInfo{}
+	}
+	k := Key(key).String()
+	ki, ok := md.keyInfo[k]
+	if !ok && len(key) == 1 {
+		ki, ok = md.keyInfo[key[0]]
+	}
+	if ok {
+		pos := ki.pos
+		if len(md.data) > 0 {
+			pos = pos.withCol(string(md.data))
+		}
+		return KeyInfo{
+			Position: pos,
+			Type:     ki.tomlType.typeString(),
+		}
+	}
+	return KeyInfo{}
+}
+
+// Position returns the position of the key specified in the TOML document.
+//
+// The key should be specified hierarchically, for example to access the TOML
+// key "a.b.c" you would use Position("a", "b", "c"). Keys are case sensitive.
+//
+// Position will return a zero [Position] if given an empty key or a key that does
+// not exist.
+func (md *MetaData) Position(key ...string) Position {
+	return md.KeyInfo(key...).Position
+}
+
+// KeysInfo returns a copy of meta information for all keys in the TOML data,
+// keyed by their formatted string representation.
+func (md *MetaData) KeysInfo() map[string]KeyInfo {
+	res := make(map[string]KeyInfo, len(md.keyInfo))
+	for k, ki := range md.keyInfo {
+		pos := ki.pos
+		if len(md.data) > 0 {
+			pos = pos.withCol(string(md.data))
+		}
+		res[k] = KeyInfo{
+			Position: pos,
+			Type:     ki.tomlType.typeString(),
+		}
+	}
+	return res
+}
+
 // Type returns a string representation of the type of the key specified.
 //
 // Type will return the empty string if given an empty key or a key that does
 // not exist. Keys are case sensitive.
 func (md *MetaData) Type(key ...string) string {
-	if ki, ok := md.keyInfo[Key(key).String()]; ok {
+	if len(key) == 0 {
+		return ""
+	}
+	k := Key(key).String()
+	if ki, ok := md.keyInfo[k]; ok {
 		return ki.tomlType.typeString()
+	}
+	if len(key) == 1 {
+		if ki, ok := md.keyInfo[key[0]]; ok {
+			return ki.tomlType.typeString()
+		}
 	}
 	return ""
 }
