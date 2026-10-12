@@ -1283,3 +1283,79 @@ func TestMaxDepth(t *testing.T) {
 		})
 	}
 }
+
+func TestIssue451AncestorRedefinition(t *testing.T) {
+	type A struct {
+		B string `toml:"b"`
+		C string `toml:"c"`
+	}
+	type TestStruct struct {
+		A A `toml:"a"`
+	}
+
+	tests := []struct {
+		name    string
+		input   string
+		wantErr string
+	}{
+		{
+			name:    "issue 451 integer redefinition of direct ancestor",
+			input:   "a.b = \"hello\"\na = 7\n",
+			wantErr: "Key 'a' has already been defined.",
+		},
+		{
+			name:    "string redefinition of direct ancestor",
+			input:   "a.b = \"hello\"\na = \"conflict\"\n",
+			wantErr: "Key 'a' has already been defined.",
+		},
+		{
+			name:    "array redefinition of direct ancestor",
+			input:   "a.b = \"hello\"\na = [1, 2, 3]\n",
+			wantErr: "Key 'a' has already been defined.",
+		},
+		{
+			name:    "redefinition of nested implicit ancestor",
+			input:   "a.b.c = \"hello\"\na.b = 7\n",
+			wantErr: "Key 'a.b' has already been defined.",
+		},
+		{
+			name:    "redefinition of top ancestor when nested",
+			input:   "a.b.c = \"hello\"\na = 7\n",
+			wantErr: "Key 'a' has already been defined.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var s TestStruct
+			_, err := Decode(tt.input, &s)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("unexpected error message: got %q, want containing %q", err.Error(), tt.wantErr)
+			}
+
+			var m map[string]any
+			_, err = Decode(tt.input, &m)
+			if err == nil {
+				t.Fatalf("expected error decoding into map, got nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("unexpected error message decoding into map: got %q, want containing %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+
+	t.Run("valid siblings pass", func(t *testing.T) {
+		validInput := "a.b = \"hello\"\na.c = \"world\"\n"
+		var s TestStruct
+		_, err := Decode(validInput, &s)
+		if err != nil {
+			t.Fatalf("unexpected error for valid dotted siblings: %v", err)
+		}
+		if s.A.B != "hello" || s.A.C != "world" {
+			t.Fatalf("unexpected decoded values: %+v", s)
+		}
+	})
+}

@@ -324,7 +324,6 @@ func TestToml(t *testing.T) {
 			"invalid/datetime/offset-overflow-minute",
 
 			// TODO: fix this; we allow appending to tables, but shouldn't.
-			"invalid/array/extend-defined-aot",
 			"invalid/inline-table/duplicate-key-03",
 			"invalid/inline-table/overwrite-02",
 			"invalid/inline-table/overwrite-08",
@@ -335,8 +334,6 @@ func TestToml(t *testing.T) {
 			"invalid/table/append-to-array-with-dotted-keys",
 			"invalid/table/append-with-dotted-keys-01",
 			"invalid/table/append-with-dotted-keys-02",
-			"invalid/table/append-with-dotted-keys-03",
-			"invalid/table/append-with-dotted-keys-05",
 			"invalid/table/append-with-dotted-keys-08",
 			"invalid/table/duplicate-key-04",
 			"invalid/table/duplicate-key-05",
