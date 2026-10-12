@@ -347,11 +347,47 @@ func (md *MetaData) unifyStruct(mapping any, rv reflect.Value) error {
 	return nil
 }
 
+func typeImplementsTextUnmarshaler(t reflect.Type) bool {
+	return t.Implements(unmarshalText) || reflect.PointerTo(t).Implements(unmarshalText)
+}
+
+func (md *MetaData) unifyMapKey(keyTyp reflect.Type, k string) (reflect.Value, error) {
+	if typeImplementsTextUnmarshaler(keyTyp) {
+		var rvkey reflect.Value
+		if keyTyp.Kind() == reflect.Pointer {
+			rvkey = reflect.New(keyTyp.Elem())
+			if u, ok := rvkey.Interface().(encoding.TextUnmarshaler); ok {
+				if err := u.UnmarshalText([]byte(k)); err != nil {
+					return reflect.Value{}, md.parseErr(err)
+				}
+			}
+			return rvkey, nil
+		}
+
+		rvkey = reflect.New(keyTyp)
+		if u, ok := rvkey.Interface().(encoding.TextUnmarshaler); ok {
+			if err := u.UnmarshalText([]byte(k)); err != nil {
+				return reflect.Value{}, md.parseErr(err)
+			}
+		}
+		return rvkey.Elem(), nil
+	}
+
+	switch keyTyp.Kind() {
+	case reflect.String:
+		return reflect.ValueOf(k).Convert(keyTyp), nil
+	case reflect.Interface:
+		return reflect.ValueOf(k), nil
+	default:
+		return reflect.Value{}, fmt.Errorf("toml: cannot decode to a map with non-string key type (%s in %q)", keyTyp.Kind(), keyTyp)
+	}
+}
+
 func (md *MetaData) unifyMap(mapping any, rv reflect.Value) error {
-	keyType := rv.Type().Key().Kind()
-	if keyType != reflect.String && keyType != reflect.Interface {
+	keyTyp := rv.Type().Key()
+	if !typeImplementsTextUnmarshaler(keyTyp) && keyTyp.Kind() != reflect.String && keyTyp.Kind() != reflect.Interface {
 		return fmt.Errorf("toml: cannot decode to a map with non-string key type (%s in %q)",
-			keyType, rv.Type())
+			keyTyp.Kind(), rv.Type())
 	}
 
 	tmap, ok := mapping.(map[string]any)
@@ -368,22 +404,18 @@ func (md *MetaData) unifyMap(mapping any, rv reflect.Value) error {
 		md.decoded[md.context.add(k).String()] = struct{}{}
 		md.context = append(md.context, k)
 
+		rvkey, err := md.unifyMapKey(keyTyp, k)
+		if err != nil {
+			return err
+		}
+
 		rvval := reflect.Indirect(reflect.New(rv.Type().Elem()))
 
-		err := md.unify(v, indirect(rvval))
+		err = md.unify(v, indirect(rvval))
 		if err != nil {
 			return err
 		}
 		md.context = md.context[0 : len(md.context)-1]
-
-		rvkey := indirect(reflect.New(rv.Type().Key()))
-
-		switch keyType {
-		case reflect.Interface:
-			rvkey.Set(reflect.ValueOf(k))
-		case reflect.String:
-			rvkey.SetString(k)
-		}
 
 		rv.SetMapIndex(rvkey, rvval)
 	}

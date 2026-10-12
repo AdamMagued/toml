@@ -1283,3 +1283,144 @@ func TestMaxDepth(t *testing.T) {
 		})
 	}
 }
+
+type decodeMapKeyID string
+
+func (id *decodeMapKeyID) UnmarshalText(b []byte) error {
+	*id = decodeMapKeyID("prefix:" + string(b))
+	return nil
+}
+
+type decodeMapKeyErr string
+
+func (id *decodeMapKeyErr) UnmarshalText(b []byte) error {
+	return errors.New("unmarshal error for key: " + string(b))
+}
+
+type decodeMapKeyName string
+
+type decodeMapKeyInt int
+
+func (i *decodeMapKeyInt) UnmarshalText(b []byte) error {
+	n, err := strconv.Atoi(string(b))
+	if err != nil {
+		return err
+	}
+	*i = decodeMapKeyInt(n)
+	return nil
+}
+
+func TestDecodeMapKeyTextUnmarshaler(t *testing.T) {
+	// Happy path: custom string type implementing TextUnmarshaler
+	var withUnmarshaler map[decodeMapKeyID]string
+	_, err := Decode(`foo = "bar"`, &withUnmarshaler)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "bar"; withUnmarshaler[decodeMapKeyID("prefix:foo")] != want {
+		t.Fatalf("got %#v, want key %q to have value %q", withUnmarshaler, "prefix:foo", want)
+	}
+
+	// Pointer key type implementing TextUnmarshaler
+	var ptrKey map[*decodeMapKeyID]string
+	_, err = Decode(`foo = "bar"`, &ptrKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for k, v := range ptrKey {
+		if k != nil && *k == decodeMapKeyID("prefix:foo") && v == "bar" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("got %#v", ptrKey)
+	}
+
+	// Non-string custom type (int) implementing TextUnmarshaler
+	var intKey map[decodeMapKeyInt]string
+	_, err = Decode(`"123" = "val"`, &intKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "val"; intKey[decodeMapKeyInt(123)] != want {
+		t.Fatalf("got %#v, want key 123 to have %q", intKey, want)
+	}
+}
+
+func TestDecodeMapKeyTextUnmarshalerError(t *testing.T) {
+	var m map[decodeMapKeyErr]string
+	_, err := Decode(`badkey = "bar"`, &m)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errorContains(err, "unmarshal error for key: badkey") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+
+	var mInt map[decodeMapKeyInt]string
+	_, err = Decode(`notanumber = "bar"`, &mInt)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestDecodeMapKeyNamedString(t *testing.T) {
+	var namedString map[decodeMapKeyName]string
+	_, err := Decode(`foo = "bar"`, &namedString)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "bar"; namedString[decodeMapKeyName("foo")] != want {
+		t.Fatalf("got %#v, want key %q to have %q", namedString, "foo", want)
+	}
+}
+
+type issue464Identifier string
+
+func (i *issue464Identifier) UnmarshalText(data []byte) error {
+	id := issue464Identifier(string(data))
+	if len(id) < 4 || id[3] != ':' {
+		return fmt.Errorf("uh oh")
+	}
+	*i = id
+	return nil
+}
+
+func TestIssue464(t *testing.T) {
+	var m struct {
+		Attr map[issue464Identifier]string `toml:"attr"`
+	}
+	err := Unmarshal([]byte(`
+		[attr]
+		"foo:bar" = "fooasd"
+		"foo:baz" = "barasd"
+	`), &m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[issue464Identifier]string{
+		"foo:bar": "fooasd",
+		"foo:baz": "barasd",
+	}
+	if !reflect.DeepEqual(m.Attr, want) {
+		t.Fatalf("got %#v, want %#v", m.Attr, want)
+	}
+
+	// Verify error propagation when key fails validation
+	var mErr struct {
+		Attr map[issue464Identifier]string `toml:"attr"`
+	}
+	err = Unmarshal([]byte(`
+		[attr]
+		"invalid" = "val"
+	`), &mErr)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errorContains(err, "uh oh") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
