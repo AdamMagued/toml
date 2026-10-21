@@ -19,10 +19,11 @@ type parser struct {
 	currentKey string   // Base key name for everything except hashes.
 	pos        Position // Current position in the TOML file.
 
-	ordered   []Key               // List of keys in the order that they appear in the TOML data.
-	keyInfo   map[string]keyInfo  // Map keyname → info about the TOML key.
-	mapping   map[string]any      // Map keyname → key value.
-	implicits map[string]struct{} // Record implicit keys (e.g. "key.group.names").
+	ordered      []Key               // List of keys in the order that they appear in the TOML data.
+	keyInfo      map[string]keyInfo  // Map keyname → info about the TOML key.
+	mapping      map[string]any      // Map keyname → key value.
+	implicits    map[string]struct{} // Record implicit keys (e.g. "key.group.names").
+	dottedTables map[string]struct{} // Record tables created by dotted keys.
 }
 
 type keyInfo struct {
@@ -64,12 +65,13 @@ func parse(data string, maxDepth int) (p *parser, err error) {
 	}
 
 	p = &parser{
-		lx:        lex(data),
-		maxDepth:  maxDepth,
-		keyInfo:   make(map[string]keyInfo),
-		mapping:   make(map[string]any),
-		ordered:   make([]Key, 0),
-		implicits: make(map[string]struct{}),
+		lx:           lex(data),
+		maxDepth:     maxDepth,
+		keyInfo:      make(map[string]keyInfo),
+		mapping:      make(map[string]any),
+		ordered:      make([]Key, 0),
+		implicits:    make(map[string]struct{}),
+		dottedTables: make(map[string]struct{}),
 	}
 	for {
 		item := p.next()
@@ -656,7 +658,7 @@ func (p *parser) setValue(key string, value any) {
 			hash[key] = value
 			return
 		}
-		if p.isImplicit(keyContext) {
+		if _, isMap := value.(map[string]any); isMap && p.isImplicit(keyContext) {
 			p.removeImplicit(keyContext)
 			return
 		}
@@ -690,11 +692,46 @@ func (p *parser) setType(key string, typ tomlType, pos Position) {
 
 // Implicit keys need to be created when tables are implied in "a.b.c.d = 1" and
 // "[a.b.c]" (the "a", "b", and "c" hashes are never created explicitly).
-func (p *parser) addImplicit(key Key)        { p.implicits[key.String()] = struct{}{} }
-func (p *parser) removeImplicit(key Key)     { delete(p.implicits, key.String()) }
-func (p *parser) isImplicit(key Key) bool    { _, ok := p.implicits[key.String()]; return ok }
-func (p *parser) isArray(key Key) bool       { return p.keyInfo[key.String()].tomlType == tomlArray }
-func (p *parser) addImplicitContext(key Key) { p.addImplicit(key); p.addContext(key, false) }
+func (p *parser) addImplicit(key Key)     { p.implicits[key.String()] = struct{}{} }
+func (p *parser) removeImplicit(key Key)  { delete(p.implicits, key.String()) }
+func (p *parser) isImplicit(key Key) bool { _, ok := p.implicits[key.String()]; return ok }
+func (p *parser) isArray(key Key) bool    { return p.keyInfo[key.String()].tomlType == tomlArray }
+func (p *parser) addImplicitContext(key Key) {
+	hashContext := p.mapping
+	keyContext := make(Key, 0, len(key))
+
+	for _, k := range key.parent() {
+		keyContext = append(keyContext, k)
+		if _, ok := hashContext[k]; !ok {
+			p.dottedTables[keyContext.String()] = struct{}{}
+			hashContext[k] = make(map[string]any)
+		}
+		switch t := hashContext[k].(type) {
+		case []map[string]any:
+			if len(t) == 0 {
+				p.panicf("Key '%s' has already been defined.", keyContext)
+			}
+			hashContext = t[len(t)-1]
+		case map[string]any:
+			hashContext = t
+		default:
+			p.panicf("Key '%s' has already been defined.", keyContext)
+		}
+	}
+
+	k := key.last()
+	keyContext = append(keyContext, k)
+	if _, ok := hashContext[k]; ok {
+		if _, isDotted := p.dottedTables[keyContext.String()]; !isDotted {
+			p.panicf("Key '%s' has already been defined.", keyContext)
+		}
+		p.context = keyContext
+		return
+	}
+
+	p.dottedTables[keyContext.String()] = struct{}{}
+	p.addContext(key, false)
+}
 
 // current returns the full key name of the current context.
 func (p *parser) current() string {
