@@ -1427,3 +1427,210 @@ k1 = "a"
 		t.Fatalf("\nhave: %s\nwant: %s", h, w)
 	}
 }
+
+// Issue 530: encoder produced invalid toml (missing or extraneous commas) for inline tables.
+func TestEncodeInlineTableCommas(t *testing.T) {
+	t.Run("issue 530 interleaved direct and sub-tables", func(t *testing.T) {
+		type nested struct {
+			C int
+		}
+		type item struct {
+			A int
+			B nested
+			C int
+		}
+		type doc struct {
+			V []any
+		}
+
+		val := doc{
+			V: []any{1, item{A: 1, B: nested{C: 2}, C: 3}},
+		}
+
+		out, err := Marshal(val)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		want := "V = [1, {A = 1, C = 3, B = {C = 2}}]\n"
+		if string(out) != want {
+			t.Fatalf("\nhave: %q\nwant: %q", string(out), want)
+		}
+
+		var decoded doc
+		if err := Unmarshal(out, &decoded); err != nil {
+			t.Fatalf("unmarshal error: %s", err)
+		}
+	})
+
+	t.Run("issue 530 slice of slice", func(t *testing.T) {
+		type nested struct {
+			C int
+		}
+		type item struct {
+			A int
+			B nested
+			C int
+		}
+		type doc struct {
+			V [][]item
+		}
+
+		val := doc{
+			V: [][]item{{{A: 1, B: nested{C: 2}, C: 3}}},
+		}
+
+		out, err := Marshal(val)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		want := "V = [[{A = 1, C = 3, B = {C = 2}}]]\n"
+		if string(out) != want {
+			t.Fatalf("\nhave: %q\nwant: %q", string(out), want)
+		}
+
+		var decoded doc
+		if err := Unmarshal(out, &decoded); err != nil {
+			t.Fatalf("unmarshal error: %s", err)
+		}
+	})
+
+	t.Run("omitempty fields", func(t *testing.T) {
+		type item struct {
+			A string `toml:"a,omitempty"`
+			B string `toml:"b,omitempty"`
+			C string `toml:"c,omitempty"`
+		}
+		type doc struct {
+			V []any
+		}
+
+		tests := []struct {
+			input item
+			want  string
+		}{
+			{item{A: "1", C: "3"}, "V = [1, {a = \"1\", c = \"3\"}]\n"},
+			{item{A: "1", B: "2"}, "V = [1, {a = \"1\", b = \"2\"}]\n"},
+			{item{B: "2", C: "3"}, "V = [1, {b = \"2\", c = \"3\"}]\n"},
+			{item{}, "V = [1, {}]\n"},
+		}
+
+		for _, tt := range tests {
+			out, err := Marshal(doc{V: []any{1, tt.input}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(out) != tt.want {
+				t.Fatalf("\nhave: %q\nwant: %q", string(out), tt.want)
+			}
+
+			var decoded doc
+			if err := Unmarshal(out, &decoded); err != nil {
+				t.Fatalf("unmarshal error: %s", err)
+			}
+		}
+	})
+
+	t.Run("omitzero fields", func(t *testing.T) {
+		type item struct {
+			A int `toml:"a,omitzero"`
+			B int `toml:"b,omitzero"`
+			C int `toml:"c,omitzero"`
+		}
+		type doc struct {
+			V []any
+		}
+
+		tests := []struct {
+			input item
+			want  string
+		}{
+			{item{A: 1, C: 3}, "V = [1, {a = 1, c = 3}]\n"},
+			{item{A: 1, B: 2}, "V = [1, {a = 1, b = 2}]\n"},
+			{item{B: 2, C: 3}, "V = [1, {b = 2, c = 3}]\n"},
+			{item{}, "V = [1, {}]\n"},
+		}
+
+		for _, tt := range tests {
+			out, err := Marshal(doc{V: []any{1, tt.input}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(out) != tt.want {
+				t.Fatalf("\nhave: %q\nwant: %q", string(out), tt.want)
+			}
+
+			var decoded doc
+			if err := Unmarshal(out, &decoded); err != nil {
+				t.Fatalf("unmarshal error: %s", err)
+			}
+		}
+	})
+
+	t.Run("nil pointer and ignored fields", func(t *testing.T) {
+		type item struct {
+			A *int   `toml:"a"`
+			B string `toml:"-"`
+			C string `toml:"c"`
+		}
+		type doc struct {
+			V []any
+		}
+
+		val := doc{
+			V: []any{1, item{A: nil, B: "skip", C: "ok"}},
+		}
+
+		out, err := Marshal(val)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		want := "V = [1, {c = \"ok\"}]\n"
+		if string(out) != want {
+			t.Fatalf("\nhave: %q\nwant: %q", string(out), want)
+		}
+
+		var decoded doc
+		if err := Unmarshal(out, &decoded); err != nil {
+			t.Fatalf("unmarshal error: %s", err)
+		}
+	})
+
+	t.Run("map with nil and sub-tables", func(t *testing.T) {
+		type doc struct {
+			V []any
+		}
+
+		val := doc{
+			V: []any{
+				1,
+				map[string]any{
+					"a": 1,
+					"b": nil,
+					"c": map[string]any{"d": 2},
+				},
+				map[string]any{
+					"x": nil,
+				},
+			},
+		}
+
+		out, err := Marshal(val)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		want := "V = [1, {a = 1, c = {d = 2}}, {}]\n"
+		if string(out) != want {
+			t.Fatalf("\nhave: %q\nwant: %q", string(out), want)
+		}
+
+		var decoded doc
+		if err := Unmarshal(out, &decoded); err != nil {
+			t.Fatalf("unmarshal error: %s", err)
+		}
+	})
+}
+
